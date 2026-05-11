@@ -1,0 +1,27 @@
+{
+  "DEV": {
+    "RawMountPath": "/mnt/sofdlzonelab_data-engineering-dev/shared/raw",
+    "BronzeMountPath": "/mnt/sofdlzonelab_data-engineering-dev/shared/bronze",
+    "SilverMountPath": "/mnt/sofdlzonelab_data-engineering-dev/shared/silver",
+    "GoldMountPath": "/mnt/sofdlzonelab_data-engineering-dev/shared/gold",
+    "WebHookURL":"https://owfg.webhook.office.com/webhookb2/08a37fb4-e893-4e4f-a8e8-589152fc7bbf@fdb969dd-87c5-4a41-87d6-86f80f4581db/IncomingWebhook/ebfefd319ecb4392915520deb2d14a15/afe2f6a7-2d13-4f5b-b0fd-a93043a90512"
+  },
+  "QA": {
+    "RawMountPath": "/mnt/sofdlzonelab_main-data/raw",
+    "BronzeMountPath": "/mnt/sofdlzonelab_main-data/bronze",
+    "SilverMountPath": "/mnt/sofdlzonelab_main-data/silver",
+    "GoldMountPath": "/mnt/sofdlzonelab_main-data/gold",
+    "WebHookURL":"https://owfg.webhook.office.com/webhookb2/08a37fb4-e893-4e4f-a8e8-589152fc7bbf@fdb969dd-87c5-4a41-87d6-86f80f4581db/IncomingWebhook/7abd59c7535b4782b8fcb9ab41eba1a1/afe2f6a7-2d13-4f5b-b0fd-a93043a90512"
+  },
+  "PROD": {
+    "RawMountPath": "/mnt/sofdlzone1_main-data",
+    "BronzeMountPath": "/mnt/sofdlzone1b_main-data",
+    "SilverMountPath": "/mnt/sofdlzone2s_main-data",
+    "GoldMountPath": "/mnt/sofdlzone3_main-data",
+    "WebHookURL":"https://owfg.webhook.office.com/webhookb2/08a37fb4-e893-4e4f-a8e8-589152fc7bbf@fdb969dd-87c5-4a41-87d6-86f80f4581db/IncomingWebhook/3ad7f1a762904a279e773d517741879b/afe2f6a7-2d13-4f5b-b0fd-a93043a90512"
+  },
+  "sofBannerList": ["SOF","UF","PSF"],
+  "blfBannerList": ["BLF","NM","MFF"],
+  "locationTypeList": ["ST","CS","LS"],
+  "GoldFactNumRetentionYears": "3"
+}
