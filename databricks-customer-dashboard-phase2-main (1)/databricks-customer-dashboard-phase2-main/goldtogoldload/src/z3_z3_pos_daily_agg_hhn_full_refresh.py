@@ -44,15 +44,22 @@ if Environment != 'DEV' and Environment != 'QA' and Environment != 'PROD':
 config = open("../../configs/config.json")
 settings = json.load(config)
 
+# Unity Catalog three-level namespace
+catalog_name = settings[Environment]['catalog_name']
+MASTER_DIM_GOLD_SCHEMA = settings['MASTER_DIM_GOLD_SCHEMA']
+SALES_AGG_GOLD_SCHEMA = settings['SALES_AGG_GOLD_SCHEMA']
 
-# Unity Catalog three-level namespace - dynamic per environment
-catalog = f"sofdl_{Environment.lower()}"
-schema = "sales"
+# Source and target table names
+SOURCE_TABLE_NAME_1 = "customer_dim"
+SOURCE_TABLE_NAME_2 = "pos_daily_agg_card"
+TABLE_NAME = "pos_daily_agg_hhn"
 
+# Target table path
+pos_daily_agg_hhn_path = settings[Environment]['GoldMountPath'] + f"/source/sales/agg/{TABLE_NAME}"
 
-customer_dim = settings[Environment]['GoldMountPath'] + "/source/master/dim/customer_dim"
-pos_daily_agg_card = settings[Environment]['GoldMountPath'] + "/source/sales/agg/pos_daily_agg_card"
-pos_daily_agg_hhn = settings[Environment]['GoldMountPath'] + "/source/sales/agg/pos_daily_agg_hhn"
+# Source table UC references
+customer_dim = f"{catalog_name}.{MASTER_DIM_GOLD_SCHEMA}.{SOURCE_TABLE_NAME_1}"
+pos_daily_agg_card = f"{catalog_name}.{SALES_AGG_GOLD_SCHEMA}.{SOURCE_TABLE_NAME_2}"
 
 now = common.get_now_pst()
 
@@ -81,10 +88,10 @@ print(f"Last sundays's date is {start_sunday} for the running date {first_day_of
 
 try:
   # Fetch pos daily aggregate card level data from gold layer for the current month and back to the last 31 months.
-  posDailyAggCardDF = spark.read.format("delta").load(pos_daily_agg_card)\
+  posDailyAggCardDF = spark.table(pos_daily_agg_card)\
                             .filter((f.col("fiscal_date") >= start_sunday) & (f.col("fiscal_date") <= last_saturday_date))
                                     
-  customerDF = spark.read.format("delta").load(customer_dim).select("customer_hk", "current_card_type", "current_household_id")
+  customerDF = spark.table(customer_dim).select("customer_hk", "current_card_type", "current_household_id")
   
   # Build aggregate table at HHN level
   posDailyAggHHNDF = posDailyAggCardDF.join(customerDF, posDailyAggCardDF.customer_hk == customerDF.customer_hk, "inner")\
@@ -99,10 +106,31 @@ try:
                                                  .withColumn("dl_load_dt", f.lit(now))\
                                                  .select("fiscal_date", "hhn", "location_hk", "channel", "transaction_count", "sales", "scan", "units", "items", "dl_load_dt")
   
-  # Load data to target table
-  posDailyAggHHNDF.write.mode("overwrite")\
-                    .format("delta")\
-                    .save(pos_daily_agg_hhn)
+  # Create UC table with DDL
+  pos_daily_agg_hhn_table = f"{catalog_name}.{SALES_AGG_GOLD_SCHEMA}.{TABLE_NAME}"
+  spark.sql(f"""
+    CREATE OR REPLACE TABLE {pos_daily_agg_hhn_table} (
+    fiscal_date DATE COMMENT 'Transaction fiscal date',
+    hhn DECIMAL(12,0) COMMENT 'Unique identifier for each household',
+    location_hk STRING COMMENT 'Location hash key identifier',
+    channel STRING COMMENT 'Sales channel (In Store, Delivery, Pickup, Adjustment)',
+    transaction_count INT COMMENT 'Number of distinct transactions',
+    sales DECIMAL(18,2) COMMENT 'Total merchandise sales amount',
+    scan DECIMAL(18,2) COMMENT 'Total merchandise scan margin',
+    units DECIMAL(18,2) COMMENT 'Total unit count',
+    items DECIMAL(18,2) COMMENT 'Total item count',
+    dl_load_dt TIMESTAMP COMMENT 'Timestamp of when the data was loaded into the table'
+    )
+    USING delta
+    LOCATION '{pos_daily_agg_hhn_path}'
+    """)
+
+  # Saving the table
+  posDailyAggHHNDF.write \
+    .mode("overwrite") \
+    .format("delta") \
+    .option("overwriteSchema", "true") \
+    .saveAsTable(pos_daily_agg_hhn_table)
   
 except Exception as ex:
   raise str(ex)
@@ -115,11 +143,5 @@ except Exception as ex:
 
 # COMMAND ----------
 
-DeltaTable = DeltaTable.forPath(spark, pos_daily_agg_hhn)
+DeltaTable = DeltaTable.forPath(spark, pos_daily_agg_hhn_path)
 DeltaTable.vacuum(0)
-
-# COMMAND ----------
-
-# DBTITLE 1,Create Unity Catalog table
-
-spark.sql(f"CREATE TABLE IF NOT EXISTS {catalog}.{schema}.pos_daily_agg_hhn USING DELTA LOCATION '{pos_daily_agg_hhn}'")

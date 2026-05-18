@@ -4,6 +4,7 @@
     "BronzeMountPath": "abfss://data-engineering-dev@sofdlzonelab.dfs.core.windows.net/shared/bronze",
     "SilverMountPath": "abfss://data-engineering-dev@sofdlzonelab.dfs.core.windows.net/shared/silver",
     "GoldMountPath": "abfss://data-engineering-dev@sofdlzonelab.dfs.core.windows.net/shared/gold",
+    "catalog_name": "dev_catalog",
     "WebHookURL":"https://owfg.webhook.office.com/webhookb2/08a37fb4-e893-4e4f-a8e8-589152fc7bbf@fdb969dd-87c5-4a41-87d6-86f80f4581db/IncomingWebhook/ebfefd319ecb4392915520deb2d14a15/afe2f6a7-2d13-4f5b-b0fd-a93043a90512"
   },
   "QA": {
@@ -11,6 +12,7 @@
     "BronzeMountPath": "abfss://main-data@sofdlzonelab.dfs.core.windows.net/bronze",
     "SilverMountPath": "abfss://main-data@sofdlzonelab.dfs.core.windows.net/silver",
     "GoldMountPath": "abfss://main-data@sofdlzonelab.dfs.core.windows.net/gold",
+    "catalog_name": "qa_catalog",
     "WebHookURL":"https://owfg.webhook.office.com/webhookb2/08a37fb4-e893-4e4f-a8e8-589152fc7bbf@fdb969dd-87c5-4a41-87d6-86f80f4581db/IncomingWebhook/7abd59c7535b4782b8fcb9ab41eba1a1/afe2f6a7-2d13-4f5b-b0fd-a93043a90512"
   },
   "PROD": {
@@ -18,8 +20,16 @@
     "BronzeMountPath": "abfss://main-data@sofdlzone1b.dfs.core.windows.net",
     "SilverMountPath": "abfss://main-data@sofdlzone2s.dfs.core.windows.net",
     "GoldMountPath": "abfss://main-data@sofdlzone3.dfs.core.windows.net",
+    "catalog_name": "prod_catalog",
     "WebHookURL":"https://owfg.webhook.office.com/webhookb2/08a37fb4-e893-4e4f-a8e8-589152fc7bbf@fdb969dd-87c5-4a41-87d6-86f80f4581db/IncomingWebhook/3ad7f1a762904a279e773d517741879b/afe2f6a7-2d13-4f5b-b0fd-a93043a90512"
   },
+  "MASTER_DIM_GOLD_SCHEMA": "master_dim_gold",
+  "CUSTOMER_AGG_GOLD_SCHEMA": "customer_agg_gold",
+  "SALES_FACT_GOLD_SCHEMA": "sales_fact_gold",
+  "SALES_DIM_GOLD_SCHEMA": "sales_dim_gold",
+  "SALES_AGG_GOLD_SCHEMA": "sales_agg_gold",
+  "SILVER_LDW_PRODUCT_SCHEMA": "silver_ldw_product",
+  "SILVER_MERGED_CUSTOMER_SCHEMA": "silver_merged_customer",
   "sofBannerList": ["SOF","UF","PSF"],
   "blfBannerList": ["BLF","NM","MFF"],
   "locationTypeList": ["ST","CS","LS"],

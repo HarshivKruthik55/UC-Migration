@@ -43,15 +43,29 @@ if Environment != 'DEV' and Environment != 'QA' and Environment != 'PROD':
 config = open("../../configs/config.json")
 settings = json.load(config)
 
-# Unity Catalog three-level namespace - dynamic per environment
-catalog = f"sofdl_{Environment.lower()}"
-schema = "sales"
+# Unity Catalog three-level namespace
+catalog_name = settings[Environment]['catalog_name']
+MASTER_DIM_GOLD_SCHEMA = settings['MASTER_DIM_GOLD_SCHEMA']
+SALES_FACT_GOLD_SCHEMA = settings['SALES_FACT_GOLD_SCHEMA']
+SALES_DIM_GOLD_SCHEMA = settings['SALES_DIM_GOLD_SCHEMA']
+SALES_AGG_GOLD_SCHEMA = settings['SALES_AGG_GOLD_SCHEMA']
 
-retail_sales_fact = settings[Environment]['GoldMountPath'] + "/source/sales/fact/retail_sale_fact"
-location_dim = settings[Environment]['GoldMountPath'] + "/source/master/dim/location_dim"
-item_dim = settings[Environment]['GoldMountPath'] + "/source/master/dim/item_dim"
-register_dim = settings[Environment]['GoldMountPath'] + "/source/sales/dim/register_dim"
-pos_daily_agg_card = settings[Environment]['GoldMountPath'] + "/source/sales/agg/pos_daily_agg_card"
+# Source and target table names
+SOURCE_TABLE_NAME_1 = "retail_sale_fact"
+SOURCE_TABLE_NAME_2 = "location_dim"
+SOURCE_TABLE_NAME_3 = "item_dim"
+SOURCE_TABLE_NAME_4 = "register_dim"
+TABLE_NAME = "pos_daily_agg_card"
+
+# Target table path
+pos_daily_agg_card_path = settings[Environment]['GoldMountPath'] + f"/source/sales/agg/{TABLE_NAME}"
+
+# Source table UC references
+retail_sales_fact = f"{catalog_name}.{SALES_FACT_GOLD_SCHEMA}.{SOURCE_TABLE_NAME_1}"
+location_dim = f"{catalog_name}.{MASTER_DIM_GOLD_SCHEMA}.{SOURCE_TABLE_NAME_2}"
+item_dim = f"{catalog_name}.{MASTER_DIM_GOLD_SCHEMA}.{SOURCE_TABLE_NAME_3}"
+register_dim = f"{catalog_name}.{SALES_DIM_GOLD_SCHEMA}.{SOURCE_TABLE_NAME_4}"
+
 sofBannerList = settings["sofBannerList"]
 
 now = common.get_now_pst()
@@ -84,14 +98,14 @@ print(f"Last sundays's date is {start_sunday} for the running date {first_day_of
 
 try:
 
-  locationDF = spark.read.format("delta").load(location_dim)\
+  locationDF = spark.table(location_dim)\
                                          .filter(f.col("current_banner_short_name").isin(sofBannerList))\
                                          .select("location_hk")
-  itemDF = spark.read.format("delta").load(item_dim).filter(f.col("current_financial_sale_flag") == 'Y').select("item_hk") 
-  registerDF = spark.read.format("delta").load(register_dim).select("register_hk","id")
+  itemDF = spark.table(item_dim).filter(f.col("current_financial_sale_flag") == 'Y').select("item_hk") 
+  registerDF = spark.table(register_dim).select("register_hk","id")
 
   # Fetch retail_sale fact data from gold layer for the current month and back to the last 31 months.
-  retailSalesDF = spark.read.format("delta").load(retail_sales_fact)\
+  retailSalesDF = spark.table(retail_sales_fact)\
                           .filter((f.col("fiscal_date") >= start_sunday) & (f.col("fiscal_date") <= last_saturday_date))\
                           .select("fiscal_date", "location_hk", "customer_hk", "item_hk", "register_hk", "ecomm_flag"
                                   , "transaction_number", "merch_sales", "merch_scan_margin", "unit_count", "item_count")
@@ -121,12 +135,33 @@ try:
                                             .select("fiscal_date", "customer_hk", "location_hk", "channel", "transaction_count", "sales"
                                                          , "scan", "units", "items", "dl_load_dt", "dl_update_dt")
 
+  # Create UC table with DDL
+  pos_daily_agg_card_table = f"{catalog_name}.{SALES_AGG_GOLD_SCHEMA}.{TABLE_NAME}"
+  spark.sql(f"""
+    CREATE OR REPLACE TABLE {pos_daily_agg_card_table} (
+    fiscal_date DATE COMMENT 'Transaction fiscal date',
+    customer_hk STRING COMMENT 'Customer hash key identifier',
+    location_hk STRING COMMENT 'Location hash key identifier',
+    channel STRING COMMENT 'Sales channel (In Store, Delivery, Pickup, Adjustment)',
+    transaction_count INT COMMENT 'Number of distinct transactions',
+    sales DECIMAL(18,2) COMMENT 'Total merchandise sales amount',
+    scan DECIMAL(18,2) COMMENT 'Total merchandise scan margin',
+    units DECIMAL(18,2) COMMENT 'Total unit count',
+    items DECIMAL(18,2) COMMENT 'Total item count',
+    dl_load_dt TIMESTAMP COMMENT 'Timestamp of when the data was loaded into the table',
+    dl_update_dt TIMESTAMP COMMENT 'Timestamp of when the data was last updated'
+    )
+    USING delta
+    PARTITIONED BY (fiscal_date)
+    LOCATION '{pos_daily_agg_card_path}'
+    """)
 
-  # Load data to target table
-  posDailyAggCardDF.write.mode("overwrite")\
-                   .format("delta")\
-                   .partitionBy("fiscal_date")\
-                   .save(pos_daily_agg_card)
+  # Saving the table
+  posDailyAggCardDF.write \
+    .mode("overwrite") \
+    .format("delta") \
+    .option("overwriteSchema", "true") \
+    .saveAsTable(pos_daily_agg_card_table)
   
 except Exception as ex:
   raise str(ex)
@@ -138,10 +173,4 @@ except Exception as ex:
 
 # COMMAND ----------
 
-common.vacuum_delta_table(spark, pos_daily_agg_card)
-
-# COMMAND ----------
-
-# DBTITLE 1,Create Unity Catalog table
-
-spark.sql(f"CREATE TABLE IF NOT EXISTS {catalog}.{schema}.pos_daily_agg_card USING DELTA LOCATION '{pos_daily_agg_card}'")
+common.vacuum_delta_table(spark, pos_daily_agg_card_path)

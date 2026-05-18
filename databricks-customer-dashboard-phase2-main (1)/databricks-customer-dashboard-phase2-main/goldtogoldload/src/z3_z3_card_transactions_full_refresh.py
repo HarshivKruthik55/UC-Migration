@@ -43,16 +43,28 @@ if Environment != 'DEV' and Environment != 'QA' and Environment != 'PROD':
 config = open("../../configs/config.json")
 settings = json.load(config)
 
-# Unity Catalog three-level namespace - dynamic per environment
-catalog = f"sofdl_{Environment.lower()}"
-schema = "customer"
+# Unity Catalog three-level namespace
+catalog_name = settings[Environment]['catalog_name']
+CUSTOMER_AGG_GOLD_SCHEMA = settings['CUSTOMER_AGG_GOLD_SCHEMA']
 
-retail_sales_fact = settings[Environment]['GoldMountPath'] + "/source/sales/fact/retail_sale_fact"
-location_dim = settings[Environment]['GoldMountPath'] + "/source/master/dim/location_dim"
-item_dim = settings[Environment]['GoldMountPath'] + "/source/master/dim/item_dim"
-date_dim = settings[Environment]['GoldMountPath'] + "/source/master/dim/date_dim"
-cust_dim = settings[Environment]['GoldMountPath'] + "/source/master/dim/customer_dim"
-card_transactions = settings[Environment]['GoldMountPath'] + "/source/customer/agg/card_transactions"
+# Source table names
+SOURCE_TABLE_NAME_1 = "retail_sale_fact"
+SOURCE_TABLE_NAME_2 = "location_dim"
+SOURCE_TABLE_NAME_3 = "item_dim"
+SOURCE_TABLE_NAME_4 = "date_dim"
+SOURCE_TABLE_NAME_5 = "customer_dim"
+TABLE_NAME = "card_transactions"
+
+# Target table path
+card_transactions_path = settings[Environment]['GoldMountPath'] + f"/source/customer/agg/{TABLE_NAME}"
+
+# Source table UC references
+retail_sales_fact = f"{catalog_name}.{CUSTOMER_AGG_GOLD_SCHEMA}.{SOURCE_TABLE_NAME_1}"
+location_dim = f"{catalog_name}.{CUSTOMER_AGG_GOLD_SCHEMA}.{SOURCE_TABLE_NAME_2}"
+item_dim = f"{catalog_name}.{CUSTOMER_AGG_GOLD_SCHEMA}.{SOURCE_TABLE_NAME_3}"
+date_dim = f"{catalog_name}.{CUSTOMER_AGG_GOLD_SCHEMA}.{SOURCE_TABLE_NAME_4}"
+cust_dim = f"{catalog_name}.{CUSTOMER_AGG_GOLD_SCHEMA}.{SOURCE_TABLE_NAME_5}"
+
 sofBannerList = settings["sofBannerList"]
 blfBannerList = settings["blfBannerList"]
 locationTypeList = settings["locationTypeList"]
@@ -221,17 +233,17 @@ def cust_transactions_agg(retailSalesDF, locationDF, itemDF, custDF, dateDF, agg
 try:
   
   # Get only locations for Save On Foods, Buy Low Foods banners only
-  locationDF = spark.read.format("delta").load(location_dim)\
+  locationDF = spark.table(location_dim)\
                                          .filter((f.col("current_banner_short_name").isin(sofBannerList + blfBannerList)) & (f.col("location_type").isin(locationTypeList)))\
                                          .select("location_hk", "current_banner_short_name")
   # Get Financial items only
-  itemDF = spark.read.format("delta").load(item_dim).filter(f.col("current_financial_sale_flag") == 'Y')\
+  itemDF = spark.table(item_dim).filter(f.col("current_financial_sale_flag") == 'Y')\
                                                     .select("item_hk", "current_financial_sale_flag")
   # Get all cards except card_number = 0
-  custDF = spark.read.format("delta").load(cust_dim).filter(f.col("card_number") != '0')\
+  custDF = spark.table(cust_dim).filter(f.col("card_number") != '0')\
                                                     .select("customer_hk","card_number")
   # Derive current 4 week start date ,current 13 week start date and prior 13 week start & end dates for each week_end_date for all the dates
-  dateDF = spark.read.format("delta").load(date_dim)\
+  dateDF = spark.table(date_dim)\
                                      .select("date", "week_end_date")\
                                      .withColumn("current_4wk_start_dt", f.date_sub(f.col("week_end_date"), 27))\
                                      .withColumn("current_13wk_start_dt", f.date_sub(f.col("week_end_date"), 90))\
@@ -256,7 +268,7 @@ try:
   
   
   # Fetch retail_sale fact data from gold layer for the current month and back to the last 31 months.
-  retailSalesDF = spark.read.format("delta").load(retail_sales_fact)\
+  retailSalesDF = spark.table(retail_sales_fact)\
                           .filter((f.col("fiscal_date") >= rs_filter_start_date) & (f.col("fiscal_date") <= last_saturday_date))\
                           .select("fiscal_date", "location_hk", "customer_hk", "item_hk", "ecomm_flag")
 
@@ -265,11 +277,39 @@ try:
   # Aggregate data at Card and week level
   custTxnAggDF = cust_transactions_agg(retailSalesDF, locationDF, itemDF, custDF, dateDF, agg_start_week_end_dt, last_saturday_date)
 
-  # Load data to target table
-  custTxnAggDF.write.format("delta")\
-                   .mode("overwrite")\
-                   .partitionBy("week_end_date")\
-                   .save(card_transactions)
+  # Create UC table with DDL
+  card_transactions_table = f"{catalog_name}.{CUSTOMER_AGG_GOLD_SCHEMA}.{TABLE_NAME}"
+  spark.sql(f"""
+    CREATE OR REPLACE TABLE {card_transactions_table} (
+    card_number STRING COMMENT 'Unique card identifier for the customer',
+    week_end_date DATE COMMENT 'Week ending date for the transaction period',
+    sof_instore_current_4wk_flag INT COMMENT 'SOF instore transaction flag for current 4 weeks',
+    sof_instore_current_13wk_flag INT COMMENT 'SOF instore transaction flag for current 13 weeks',
+    sof_instore_prior_13wk_flag INT COMMENT 'SOF instore transaction flag for prior 13 weeks',
+    sof_ecomm_current_4wk_flag INT COMMENT 'SOF ecommerce transaction flag for current 4 weeks',
+    sof_ecomm_current_13wk_flag INT COMMENT 'SOF ecommerce transaction flag for current 13 weeks',
+    sof_ecomm_prior_13wk_flag INT COMMENT 'SOF ecommerce transaction flag for prior 13 weeks',
+    blf_instore_current_4wk_flag INT COMMENT 'BLF instore transaction flag for current 4 weeks',
+    blf_instore_current_13wk_flag INT COMMENT 'BLF instore transaction flag for current 13 weeks',
+    blf_instore_prior_13wk_flag INT COMMENT 'BLF instore transaction flag for prior 13 weeks',
+    blf_ecomm_current_4wk_flag INT COMMENT 'BLF ecommerce transaction flag for current 4 weeks',
+    blf_ecomm_current_13wk_flag INT COMMENT 'BLF ecommerce transaction flag for current 13 weeks',
+    blf_ecomm_prior_13wk_flag INT COMMENT 'BLF ecommerce transaction flag for prior 13 weeks',
+    dl_load_dt TIMESTAMP COMMENT 'Timestamp of when the data was loaded into the table',
+    dl_update_dt TIMESTAMP COMMENT 'Timestamp of when the data was last updated'
+    )
+    USING delta
+    PARTITIONED BY (week_end_date)
+    LOCATION '{card_transactions_path}'
+    """)
+
+  # Saving the table
+  custTxnAggDF.write \
+    .mode("overwrite") \
+    .format("delta") \
+    .option("overwriteSchema", "true") \
+    .saveAsTable(card_transactions_table)
+
   # Un persist Date Dataframe
   dateDF.unpersist()
   
@@ -283,9 +323,5 @@ except Exception as ex:
 
 # COMMAND ----------
 
-common.vacuum_delta_table(spark, card_transactions)
-
-# COMMAND ----------
-
-# DBTITLE 1,Create Unity Catalog external table
-spark.sql(f"CREATE TABLE IF NOT EXISTS {catalog}.{schema}.card_transactions USING DELTA LOCATION '{card_transactions}'")
+# DBTITLE 1,Vacuum Delta Table
+common.vacuum_delta_table(spark, card_transactions_path)

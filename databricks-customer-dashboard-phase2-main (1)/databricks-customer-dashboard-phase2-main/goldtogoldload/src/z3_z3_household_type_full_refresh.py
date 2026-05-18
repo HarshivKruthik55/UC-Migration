@@ -43,14 +43,20 @@ if Environment != 'DEV' and Environment != 'QA' and Environment != 'PROD':
 config = open("../../configs/config.json")
 settings = json.load(config)
 
+# Unity Catalog three-level namespace
+catalog_name = settings[Environment]['catalog_name']
+MASTER_DIM_GOLD_SCHEMA = settings['MASTER_DIM_GOLD_SCHEMA']
+CUSTOMER_AGG_GOLD_SCHEMA = settings['CUSTOMER_AGG_GOLD_SCHEMA']
 
-# Unity Catalog three-level namespace - dynamic per environment
-catalog = f"sofdl_{Environment.lower()}"
-schema = "customer"
+# Source and target table names
+SOURCE_TABLE_NAME_1 = "customer_dim"
+TABLE_NAME = "household_type"
 
+# Target table path
+household_type_path = settings[Environment]['GoldMountPath'] + f"/source/customer/agg/{TABLE_NAME}"
 
-customer_dim = settings[Environment]['GoldMountPath'] + "/source/master/dim/customer_dim"
-household_type = settings[Environment]['GoldMountPath'] + "/source/customer/agg/household_type"
+# Source table UC references
+customer_dim = f"{catalog_name}.{MASTER_DIM_GOLD_SCHEMA}.{SOURCE_TABLE_NAME_1}"
 
 now = common.get_now_pst()
 
@@ -69,7 +75,7 @@ now = common.get_now_pst()
 try:
   # Fetch most recent records for all customers from customer dim to derive household_type for each HHN.
   # Overwrite 'VMore Cards' card_type to 'Customer Card' to consider it is a Customer Card.
-  customerDF = spark.read.format("delta").load(customer_dim)\
+  customerDF = spark.table(customer_dim)\
                           .withColumn("most_recent_record", f.row_number().over(Window.partitionBy("card_number", "current_household_id").orderBy(f.col("eff_to_dt").desc())))\
                           .filter(f.col("most_recent_record") == 1)\
                           .withColumn("current_card_type", f.when(f.col("current_card_type") == 'VMore Cards', 'Customer Card')
@@ -88,10 +94,24 @@ try:
                        .withColumnRenamed("current_household_id", "hhn")\
                        .select("hhn", "hh_type", "dl_load_dt").distinct()
   
-  # Load data to target table
-  hhTypeDF.write.mode("overwrite")\
-                    .format("delta")\
-                    .save(household_type)
+  # Create UC table with DDL
+  household_type_table = f"{catalog_name}.{CUSTOMER_AGG_GOLD_SCHEMA}.{TABLE_NAME}"
+  spark.sql(f"""
+    CREATE OR REPLACE TABLE {household_type_table} (
+    hhn DECIMAL(12,0) COMMENT 'Unique identifier for each household',
+    hh_type STRING COMMENT 'Household type classification (Customer, Community, Manager, Training, Other)',
+    dl_load_dt TIMESTAMP COMMENT 'Timestamp of when the data was loaded into the table'
+    )
+    USING delta
+    LOCATION '{household_type_path}'
+    """)
+
+  # Saving the table
+  hhTypeDF.write \
+    .mode("overwrite") \
+    .format("delta") \
+    .option("overwriteSchema", "true") \
+    .saveAsTable(household_type_table)
   
 except Exception as ex:
   raise str(ex)
@@ -104,11 +124,5 @@ except Exception as ex:
 
 # COMMAND ----------
 
-DeltaTable = DeltaTable.forPath(spark, household_type)
+DeltaTable = DeltaTable.forPath(spark, household_type_path)
 DeltaTable.vacuum(0)
-
-# COMMAND ----------
-
-# DBTITLE 1,Create Unity Catalog table
-
-spark.sql(f"CREATE TABLE IF NOT EXISTS {catalog}.{schema}.household_type USING DELTA LOCATION '{household_type}'")

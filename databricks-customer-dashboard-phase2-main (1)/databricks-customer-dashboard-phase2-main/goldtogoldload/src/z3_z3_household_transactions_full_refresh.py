@@ -45,15 +45,24 @@ if Environment != 'DEV' and Environment != 'QA' and Environment != 'PROD':
 config = open("../../configs/config.json")
 settings = json.load(config)
 
+# Unity Catalog three-level namespace
+catalog_name = settings[Environment]['catalog_name']
+MASTER_DIM_GOLD_SCHEMA = settings['MASTER_DIM_GOLD_SCHEMA']
+CUSTOMER_AGG_GOLD_SCHEMA = settings['CUSTOMER_AGG_GOLD_SCHEMA']
 
-# Unity Catalog three-level namespace - dynamic per environment
-catalog = f"sofdl_{Environment.lower()}"
-schema = "customer"
+# Source and target table names
+SOURCE_TABLE_NAME_1 = "date_dim"
+SOURCE_TABLE_NAME_2 = "customer_dim"
+SOURCE_TABLE_NAME_3 = "card_transactions"
+TABLE_NAME = "household_transactions"
 
-date_dim = settings[Environment]['GoldMountPath'] + "/source/master/dim/date_dim"
-cust_dim = settings[Environment]['GoldMountPath'] + "/source/master/dim/customer_dim"
-card_transactions = settings[Environment]['GoldMountPath'] + "/source/customer/agg/card_transactions"
-household_transactions = settings[Environment]['GoldMountPath'] + "/source/customer/agg/household_transactions"
+# Target table path
+household_transactions_path = settings[Environment]['GoldMountPath'] + f"/source/customer/agg/{TABLE_NAME}"
+
+# Source table UC references
+date_dim = f"{catalog_name}.{MASTER_DIM_GOLD_SCHEMA}.{SOURCE_TABLE_NAME_1}"
+cust_dim = f"{catalog_name}.{MASTER_DIM_GOLD_SCHEMA}.{SOURCE_TABLE_NAME_2}"
+card_transactions = f"{catalog_name}.{CUSTOMER_AGG_GOLD_SCHEMA}.{SOURCE_TABLE_NAME_3}"
 
 
 now = common.get_now_pst()
@@ -79,15 +88,15 @@ print(f" last 31 months start date: {last_31_months_date}")
 try:
   
   # Identify last 31 months back starting weekend date
-  dateDF = spark.read.format("delta").load(date_dim).filter(f.col("date") == last_31_months_date).select("week_end_date")
+  dateDF = spark.table(date_dim).filter(f.col("date") == last_31_months_date).select("week_end_date")
   agg_start_week_end_dt = dateDF.select("week_end_date").collect()[0]['week_end_date']
   
   # Fetch card_transactions from last 31 months to as of last staturday
-  CustTrnxsDF = spark.read.format("delta").load(card_transactions)\
+  CustTrnxsDF = spark.table(card_transactions)\
                                           .filter((f.col("week_end_date") >= agg_start_week_end_dt) & (f.col("week_end_date") <= last_saturday_date))
 
   # Get HHN for all cards except card_number = '0'
-  custDF = spark.read.format("delta").load(cust_dim).filter(f.col("card_number") != '0')\
+  custDF = spark.table(cust_dim).filter(f.col("card_number") != '0')\
                                                     .withColumn("most_recent_record", f.row_number().over(Window.partitionBy(f.col("card_number")).orderBy(f.col("eff_to_dt").desc())))\
                                                     .filter(f.col("most_recent_record") == 1)\
                                                     .select("card_number", f.col("current_household_id").alias("hhn"))
@@ -114,12 +123,37 @@ try:
                                                         , "blf_instore_current_13wk_flag", "blf_instore_prior_13wk_flag", "blf_ecomm_current_4wk_flag", "blf_ecomm_current_13wk_flag"
                                                         , "blf_ecomm_prior_13wk_flag", "dl_load_dt")
   
-  # Load data to target table
-  hhnTxnsDF.write.format("delta")\
-                     .mode("overwrite")\
-                     .option("overwriteSchema", "true")\
-                     .partitionBy("week_end_date")\
-                     .save(household_transactions)
+  # Create UC table with DDL
+  household_transactions_table = f"{catalog_name}.{CUSTOMER_AGG_GOLD_SCHEMA}.{TABLE_NAME}"
+  spark.sql(f"""
+    CREATE OR REPLACE TABLE {household_transactions_table} (
+    hhn DECIMAL(12,0) COMMENT 'Unique identifier for each household',
+    week_end_date DATE COMMENT 'Week ending date for the transaction period',
+    sof_instore_current_4wk_flag INT COMMENT 'SOF instore transaction flag for current 4 weeks',
+    sof_instore_current_13wk_flag INT COMMENT 'SOF instore transaction flag for current 13 weeks',
+    sof_instore_prior_13wk_flag INT COMMENT 'SOF instore transaction flag for prior 13 weeks',
+    sof_ecomm_current_4wk_flag INT COMMENT 'SOF ecommerce transaction flag for current 4 weeks',
+    sof_ecomm_current_13wk_flag INT COMMENT 'SOF ecommerce transaction flag for current 13 weeks',
+    sof_ecomm_prior_13wk_flag INT COMMENT 'SOF ecommerce transaction flag for prior 13 weeks',
+    blf_instore_current_4wk_flag INT COMMENT 'BLF instore transaction flag for current 4 weeks',
+    blf_instore_current_13wk_flag INT COMMENT 'BLF instore transaction flag for current 13 weeks',
+    blf_instore_prior_13wk_flag INT COMMENT 'BLF instore transaction flag for prior 13 weeks',
+    blf_ecomm_current_4wk_flag INT COMMENT 'BLF ecommerce transaction flag for current 4 weeks',
+    blf_ecomm_current_13wk_flag INT COMMENT 'BLF ecommerce transaction flag for current 13 weeks',
+    blf_ecomm_prior_13wk_flag INT COMMENT 'BLF ecommerce transaction flag for prior 13 weeks',
+    dl_load_dt TIMESTAMP COMMENT 'Timestamp of when the data was loaded into the table'
+    )
+    USING delta
+    PARTITIONED BY (week_end_date)
+    LOCATION '{household_transactions_path}'
+    """)
+
+  # Saving the table
+  hhnTxnsDF.write \
+    .mode("overwrite") \
+    .format("delta") \
+    .option("overwriteSchema", "true") \
+    .saveAsTable(household_transactions_table)
                                       
   
 except Exception as ex:
@@ -132,10 +166,4 @@ except Exception as ex:
 
 # COMMAND ----------
 
-common.vacuum_delta_table(spark, household_transactions)
-
-# COMMAND ----------
-
-# DBTITLE 1,Create hive_metastore table
-
-spark.sql(f"CREATE TABLE IF NOT EXISTS {catalog}.{schema}.household_transactions USING DELTA LOCATION '{household_dates_path}'")
+common.vacuum_delta_table(spark, household_transactions_path)

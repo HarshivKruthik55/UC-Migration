@@ -64,17 +64,27 @@ if Environment != 'DEV' and Environment != 'QA' and Environment != 'PROD':
 config = open("../../configs/config.json")
 settings = json.load(config)
 
+# Unity Catalog three-level namespace
+catalog_name = settings[Environment]['catalog_name']
+SILVER_LDW_PRODUCT_SCHEMA = settings['SILVER_LDW_PRODUCT_SCHEMA']
+SILVER_MERGED_CUSTOMER_SCHEMA = settings['SILVER_MERGED_CUSTOMER_SCHEMA']
+CUSTOMER_AGG_GOLD_SCHEMA = settings['CUSTOMER_AGG_GOLD_SCHEMA']
 
-# Unity Catalog three-level namespace - dynamic per environment
-catalog = f"sofdl_{Environment.lower()}"
-schema = "customer"
+# Source and target table names
+SOURCE_TABLE_NAME_1 = "retail_sale"
+SOURCE_TABLE_NAME_2 = "customer"
+SOURCE_TABLE_NAME_3 = "item"
+SOURCE_TABLE_NAME_4 = "location"
+TABLE_NAME = "card_shop_dates"
 
-# table paths
-rs_path = settings[Environment]['SilverMountPath'] + "/source/ldw/product/retail_sale/"
-customer_path = settings[Environment]['SilverMountPath'] + "/source/merged/customer/customer"
-item_path = settings[Environment]['SilverMountPath'] + "/source/ldw/product/item"
-location_path = settings[Environment]['SilverMountPath'] + "/source/ldw/product/location"
-card_shop_dates_path = settings[Environment]['GoldMountPath'] + "/source/customer/agg/card_shop_dates/"
+# Target table path
+card_shop_dates_path = settings[Environment]['GoldMountPath'] + f"/source/customer/agg/{TABLE_NAME}/"
+
+# Source table UC references
+rs_table = f"{catalog_name}.{SILVER_LDW_PRODUCT_SCHEMA}.{SOURCE_TABLE_NAME_1}"
+customer_table = f"{catalog_name}.{SILVER_MERGED_CUSTOMER_SCHEMA}.{SOURCE_TABLE_NAME_2}"
+item_table = f"{catalog_name}.{SILVER_LDW_PRODUCT_SCHEMA}.{SOURCE_TABLE_NAME_3}"
+location_table = f"{catalog_name}.{SILVER_LDW_PRODUCT_SCHEMA}.{SOURCE_TABLE_NAME_4}"
 
 sofBannerList = settings["sofBannerList"]
 blfBannerList = settings["blfBannerList"]
@@ -90,11 +100,11 @@ locationTypeList = settings["locationTypeList"]
 # COMMAND ----------
 
 #Daily transaction table
-rs = spark.read.format('delta').load(rs_path).select('fiscal_Date', 'customer_id', 'store_number', 'ecomm_flag', 'item_id')
+rs = spark.table(rs_table).select('fiscal_Date', 'customer_id', 'store_number', 'ecomm_flag', 'item_id')
 
 #dim_customer : Spark.DataFrame
 #Customer details
-cust = spark.read.format('delta').load(customer_path)\
+cust = spark.table(customer_table)\
                  .filter(f.col("card_number") != '0')\
                  .withColumn("most_recent_record", f.row_number().over(Window.partitionBy(f.col("card_number")).orderBy(f.col("eff_to_dt").desc())))\
                              .filter((f.col("most_recent_record") == 1))\
@@ -102,14 +112,14 @@ cust = spark.read.format('delta').load(customer_path)\
 
 #dim_product : Spark.DataFrame
 #Product details. Using this table to filter Financial sales.
-item = spark.read.format('delta').load(item_path)\
+item = spark.table(item_table)\
             .withColumn("most_recent_record", f.row_number().over(Window.partitionBy(f.col("id")).orderBy(f.col("eff_to_dt").desc())))\
                              .filter((f.col("most_recent_record") == 1))\
             .select('id', 'Financial_Sale_Flag')
 
 #dim_location : Spark.DataFrame
 #Location details. Using this table to filter ST(Store Type) locations under the specified banners.
-location = spark.read.format('delta').load(location_path)\
+location = spark.table(location_table)\
                 .withColumn("most_recent_record", f.row_number().over(Window.partitionBy(f.col("id")).orderBy(f.col("eff_to_dt").desc())))\
                              .filter((f.col("most_recent_record") == 1))\
                 .filter(f.col('location_type').isin(locationTypeList))\
@@ -270,10 +280,65 @@ cust_shop_date = shop_dates.join(cust.select("card_number"), cust.card_number ==
                             "pfg_overall_first_shop_date","pfg_overall_last_shop_date",
                             "dl_load_dt")
   
-#Saving the table
-cust_shop_date.write.mode("overwrite")\
-  .format("delta")\
-  .save(card_shop_dates_path) 
+#Create UC table with DDL
+card_shop_dates_table = f"{catalog_name}.{CUSTOMER_AGG_GOLD_SCHEMA}.{TABLE_NAME}"
+spark.sql(f"""
+    CREATE OR REPLACE TABLE {card_shop_dates_table} (
+    card_number STRING COMMENT 'Unique card identifier for the customer',
+    sof_instore_first_shop_date DATE COMMENT 'Date of the first instore shopping visit for SOF',
+    sof_instore_last_shop_date DATE COMMENT 'Date of the last instore shopping visit for SOF',
+    sof_ecom_first_shop_date DATE COMMENT 'Date of the first ecommerce shopping visit for SOF',
+    sof_ecom_last_shop_date DATE COMMENT 'Date of the last ecommerce shopping visit for SOF',
+    buylow_instore_first_shop_date DATE COMMENT 'Date of the first instore shopping visit for BuyLow',
+    buylow_instore_last_shop_date DATE COMMENT 'Date of the last instore shopping visit for BuyLow',
+    buylow_ecom_first_shop_date DATE COMMENT 'Date of the first ecommerce shopping visit for BuyLow',
+    buylow_ecom_last_shop_date DATE COMMENT 'Date of the last ecommerce shopping visit for BuyLow',
+    sof_only_instore_first_shop_date DATE COMMENT 'Date of the first instore shopping visit for SOF only',
+    sof_only_instore_last_shop_date DATE COMMENT 'Date of the last instore shopping visit for SOF only',
+    sof_only_ecom_first_shop_date DATE COMMENT 'Date of the first ecommerce shopping visit for SOF only',
+    sof_only_ecom_last_shop_date DATE COMMENT 'Date of the last ecommerce shopping visit for SOF only',
+    uf_only_instore_first_shop_date DATE COMMENT 'Date of the first instore shopping visit for UF only',
+    uf_only_instore_last_shop_date DATE COMMENT 'Date of the last instore shopping visit for UF only',
+    uf_only_ecom_first_shop_date DATE COMMENT 'Date of the first ecommerce shopping visit for UF only',
+    uf_only_ecom_last_shop_date DATE COMMENT 'Date of the last ecommerce shopping visit for UF only',
+    psf_only_instore_first_shop_date DATE COMMENT 'Date of the first instore shopping visit for PSF only',
+    psf_only_instore_last_shop_date DATE COMMENT 'Date of the last instore shopping visit for PSF only',
+    psf_only_ecom_first_shop_date DATE COMMENT 'Date of the first ecommerce shopping visit for PSF only',
+    psf_only_ecom_last_shop_date DATE COMMENT 'Date of the last ecommerce shopping visit for PSF only',
+    blf_only_instore_first_shop_date DATE COMMENT 'Date of the first instore shopping visit for BLF only',
+    blf_only_instore_last_shop_date DATE COMMENT 'Date of the last instore shopping visit for BLF only',
+    blf_only_ecom_first_shop_date DATE COMMENT 'Date of the first ecommerce shopping visit for BLF only',
+    blf_only_ecom_last_shop_date DATE COMMENT 'Date of the last ecommerce shopping visit for BLF only',
+    nm_only_instore_first_shop_date DATE COMMENT 'Date of the first instore shopping visit for NM only',
+    nm_only_instore_last_shop_date DATE COMMENT 'Date of the last instore shopping visit for NM only',
+    nm_only_ecom_first_shop_date DATE COMMENT 'Date of the first ecommerce shopping visit for NM only',
+    nm_only_ecom_last_shop_date DATE COMMENT 'Date of the last ecommerce shopping visit for NM only',
+    mff_only_instore_first_shop_date DATE COMMENT 'Date of the first instore shopping visit for MFF only',
+    mff_only_instore_last_shop_date DATE COMMENT 'Date of the last instore shopping visit for MFF only',
+    mff_only_ecom_first_shop_date DATE COMMENT 'Date of the first ecommerce shopping visit for MFF only',
+    mff_only_ecom_last_shop_date DATE COMMENT 'Date of the last ecommerce shopping visit for MFF only',
+    qf_only_instore_first_shop_date DATE COMMENT 'Date of the first instore shopping visit for QF only',
+    qf_only_instore_last_shop_date DATE COMMENT 'Date of the last instore shopping visit for QF only',
+    qf_only_ecom_first_shop_date DATE COMMENT 'Date of the first ecommerce shopping visit for QF only',
+    qf_only_ecom_last_shop_date DATE COMMENT 'Date of the last ecommerce shopping visit for QF only',
+    pfg_instore_first_shop_date DATE COMMENT 'Date of the first instore shopping visit for PFG',
+    pfg_instore_last_shop_date DATE COMMENT 'Date of the last instore shopping visit for PFG',
+    pfg_ecom_first_shop_date DATE COMMENT 'Date of the first ecommerce shopping visit for PFG',
+    pfg_ecom_last_shop_date DATE COMMENT 'Date of the last ecommerce shopping visit for PFG',
+    pfg_overall_first_shop_date DATE COMMENT 'Overall date of the first shop visit across all formats',
+    pfg_overall_last_shop_date DATE COMMENT 'Overall date of the last shop visit across all formats',
+    dl_load_dt TIMESTAMP COMMENT 'Timestamp of when the data was loaded into the table'
+    )
+    USING delta
+    LOCATION '{card_shop_dates_path}'
+    """)
+
+# Saving the table
+cust_shop_date.write \
+  .mode("overwrite") \
+  .format("delta") \
+  .option("overwriteSchema", "true") \
+  .saveAsTable(card_shop_dates_table)
 
 cust.unpersist()
 
@@ -285,13 +350,3 @@ cust.unpersist()
 # COMMAND ----------
 
 common.vacuum_delta_table(spark, card_shop_dates_path)
-
-# COMMAND ----------
-
-# MAGIC %md
-# MAGIC ### Creating table in Unity Catalog
-
-# COMMAND ----------
-
-
-spark.sql(f"CREATE TABLE IF NOT EXISTS {catalog}.{schema}.card_shop_dates USING DELTA LOCATION '{card_shop_dates}'")
